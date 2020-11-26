@@ -503,6 +503,10 @@ bool parse_desktop_modifiers(char *desc, desktop_select_t *sel)
 		GET_MOD(active)
 		GET_MOD(urgent)
 		GET_MOD(local)
+		GET_MOD(tiled)
+		GET_MOD(monocle)
+		GET_MOD(user_tiled)
+		GET_MOD(user_monocle)
 		} else {
 			return false;
 		}
@@ -542,6 +546,8 @@ bool parse_node_modifiers(char *desc, node_select_t *sel)
 		GET_MOD(below)
 		GET_MOD(normal)
 		GET_MOD(above)
+		GET_MOD(horizontal)
+		GET_MOD(vertical)
 		} else {
 			return false;
 		}

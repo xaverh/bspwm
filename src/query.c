@@ -242,15 +242,19 @@ void query_subscribers(FILE *rsp)
 	fprintf(rsp, "]");
 }
 
-int query_node_ids(coordinates_t *ref, coordinates_t *trg, node_select_t *sel, FILE *rsp)
+int query_node_ids(coordinates_t *ref, coordinates_t *trg, monitor_select_t *mon_sel, desktop_select_t *desk_sel, node_select_t *sel, FILE *rsp)
 {
 	int count = 0;
 	for (monitor_t *m = mon_head; m != NULL; m = m->next) {
-		if (trg->monitor != NULL && m != trg->monitor) {
+		coordinates_t loc = {m, NULL, NULL};
+		if ((trg->monitor != NULL && m != trg->monitor) ||
+		    (mon_sel != NULL && !monitor_matches(&loc, ref, mon_sel))) {
 			continue;
 		}
 		for (desktop_t *d = m->desk_head; d != NULL; d = d->next) {
-			if (trg->desktop != NULL && d != trg->desktop) {
+			coordinates_t loc = {m, d, NULL};
+			if ((trg->desktop != NULL && d != trg->desktop) ||
+			    (desk_sel != NULL && !desktop_matches(&loc, ref, desk_sel))) {
 				continue;
 			}
 			count += query_node_ids_in(d->root, d, m, ref, trg, sel, rsp);
@@ -277,11 +281,13 @@ int query_node_ids_in(node_t *n, desktop_t *d, monitor_t *m, coordinates_t *ref,
 	return count;
 }
 
-int query_desktop_ids(coordinates_t *ref, coordinates_t *trg, desktop_select_t *sel, desktop_printer_t printer, FILE *rsp)
+int query_desktop_ids(coordinates_t *ref, coordinates_t *trg, monitor_select_t *mon_sel, desktop_select_t *sel, desktop_printer_t printer, FILE *rsp)
 {
 	int count = 0;
 	for (monitor_t *m = mon_head; m != NULL; m = m->next) {
-		if (trg->monitor != NULL && m != trg->monitor) {
+		coordinates_t loc = {m, NULL, NULL};
+		if ((trg->monitor != NULL && m != trg->monitor) ||
+		    (mon_sel != NULL && !monitor_matches(&loc, ref, mon_sel))) {
 			continue;
 		}
 		for (desktop_t *d = m->desk_head; d != NULL; d = d->next) {
@@ -303,7 +309,7 @@ int query_monitor_ids(coordinates_t *ref, coordinates_t *trg, monitor_select_t *
 	for (monitor_t *m = mon_head; m != NULL; m = m->next) {
 		coordinates_t loc = {m, NULL, NULL};
 		if ((trg->monitor != NULL && m != trg->monitor) ||
-			(sel != NULL && !monitor_matches(&loc, ref, sel))) {
+		    (sel != NULL && !monitor_matches(&loc, ref, sel))) {
 			continue;
 		}
 		printer(m, rsp);
@@ -420,6 +426,26 @@ void print_pointer_action(pointer_action_t a, FILE *rsp)
 	}
 }
 
+void resolve_rule_consequence(rule_consequence_t *csq)
+{
+	coordinates_t ref = {mon, mon->desk, mon->desk->focus};
+	coordinates_t dst = {NULL, NULL, NULL};
+	monitor_t *monitor = monitor_from_desc(csq->monitor_desc, &ref, &dst) != SELECTOR_OK ? NULL : dst.monitor;
+	desktop_t *desktop = desktop_from_desc(csq->desktop_desc, &ref, &dst) != SELECTOR_OK ? NULL : dst.desktop;
+	node_t *node = node_from_desc(csq->node_desc, &ref, &dst) != SELECTOR_OK ? NULL : dst.node;
+
+#define PRINT_OBJECT_ID(name) \
+	if (name == NULL) { \
+		csq->name##_desc[0] = '\0'; \
+	} else { \
+		snprintf(csq->name##_desc, 11, "0x%08X", name->id); \
+	}
+	PRINT_OBJECT_ID(monitor)
+	PRINT_OBJECT_ID(desktop)
+	PRINT_OBJECT_ID(node)
+#undef PRINT_OBJECT_ID
+}
+
 void print_rule_consequence(char **buf, rule_consequence_t *csq)
 {
 	char *rect_buf = NULL;
@@ -428,11 +454,12 @@ void print_rule_consequence(char **buf, rule_consequence_t *csq)
 		rect_buf = malloc(1);
 		*rect_buf = '\0';
 	}
+
 	asprintf(buf, "monitor=%s desktop=%s node=%s state=%s layer=%s split_dir=%s split_ratio=%lf hidden=%s sticky=%s private=%s locked=%s marked=%s center=%s follow=%s manage=%s focus=%s border=%s rectangle=%s",
 	        csq->monitor_desc, csq->desktop_desc, csq->node_desc,
 	        csq->state == NULL ? "" : STATE_STR(*csq->state),
 	        csq->layer == NULL ? "" : LAYER_STR(*csq->layer),
-	        csq->split_dir, csq->split_ratio,
+	        csq->split_dir == NULL ? "" : SPLIT_DIR_STR(*csq->split_dir), csq->split_ratio,
 	        ON_OFF_STR(csq->hidden), ON_OFF_STR(csq->sticky), ON_OFF_STR(csq->private),
 	        ON_OFF_STR(csq->locked), ON_OFF_STR(csq->marked), ON_OFF_STR(csq->center), ON_OFF_STR(csq->follow),
 	        ON_OFF_STR(csq->manage), ON_OFF_STR(csq->focus), ON_OFF_STR(csq->border), rect_buf);
@@ -470,7 +497,9 @@ node_select_t make_node_select(void)
 		.ancestor_of = OPTION_NONE,
 		.below = OPTION_NONE,
 		.normal = OPTION_NONE,
-		.above = OPTION_NONE
+		.above = OPTION_NONE,
+		.horizontal = OPTION_NONE,
+		.vertical = OPTION_NONE
 	};
 	return sel;
 }
@@ -482,7 +511,11 @@ desktop_select_t make_desktop_select(void)
 		.focused = OPTION_NONE,
 		.active = OPTION_NONE,
 		.urgent = OPTION_NONE,
-		.local = OPTION_NONE
+		.local = OPTION_NONE,
+		.tiled = OPTION_NONE,
+		.monocle = OPTION_NONE,
+		.user_tiled = OPTION_NONE,
+		.user_monocle = OPTION_NONE
 	};
 	return sel;
 }
@@ -498,6 +531,8 @@ monitor_select_t make_monitor_select(void)
 
 int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 {
+	dst->node = NULL;
+
 	coordinates_t ref_copy = *ref;
 	ref = &ref_copy;
 	char *desc_copy = copy_string(desc, strlen(desc));
@@ -507,7 +542,7 @@ int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 	char *path = strrchr(desc, '@');
 	char *colon = strrchr(desc, ':');
 
-	/* Discard hashes inside a DESKTOP_SEL */
+	/* Adjust or discard hashes inside a DESKTOP_SEL, e.g. `newest#@prev#older:/1/2` */
 	if (hash != NULL && colon != NULL && path != NULL &&
 	    path < hash && hash < colon) {
 		if (path > desc && *(path - 1) == '#') {
@@ -529,14 +564,17 @@ int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 		}
 	}
 
+	/* Discard colons within references, e.g. `@next.occupied:/#any.descendant_of.window` */
+	if (colon != NULL && hash != NULL && colon < hash) {
+		colon = NULL;
+	}
+
 	node_select_t sel = make_node_select();
 
 	if (!parse_node_modifiers(colon != NULL ? colon : desc, &sel)) {
 		free(desc_copy);
 		return SELECTOR_BAD_MODIFIERS;
 	}
-
-	dst->node = NULL;
 
 	direction_t dir;
 	cycle_dir_t cyc;
@@ -549,6 +587,8 @@ int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 		history_find_node(hdi, ref, dst, &sel);
 	} else if (streq("any", desc)) {
 		find_any_node(ref, dst, &sel);
+	} else if (streq("first_ancestor", desc)) {
+		find_first_ancestor(ref, dst, &sel);
 	} else if (streq("last", desc)) {
 		history_find_node(HISTORY_OLDER, ref, dst, &sel);
 	} else if (streq("newest", desc)) {
@@ -560,7 +600,7 @@ int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 	} else if (streq("pointed", desc)) {
 		xcb_window_t win = XCB_NONE;
 		query_pointer(&win, NULL);
-		if (locate_window(win, dst) && node_matches(dst, ref, &sel)) {
+		if (locate_leaf(win, dst) && node_matches(dst, ref, &sel)) {
 			return SELECTOR_OK;
 		} else {
 			return SELECTOR_INVALID;
@@ -645,6 +685,8 @@ int node_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 
 int desktop_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 {
+	dst->desktop = NULL;
+
 	if (*desc == '%') {
 		locate_desktop(desc + 1, dst);
 		goto end;
@@ -676,8 +718,6 @@ int desktop_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 		free(desc_copy);
 		return SELECTOR_BAD_MODIFIERS;
 	}
-
-	dst->desktop = NULL;
 
 	cycle_dir_t cyc;
 	history_dir_t hdi;
@@ -763,6 +803,8 @@ end:
 
 int monitor_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 {
+	dst->monitor = NULL;
+
 	if (*desc == '%') {
 		locate_monitor(desc + 1, dst);
 		goto end;
@@ -793,8 +835,6 @@ int monitor_from_desc(char *desc, coordinates_t *ref, coordinates_t *dst)
 		free(desc_copy);
 		return SELECTOR_BAD_MODIFIERS;
 	}
-
-	dst->monitor = NULL;
 
 	direction_t dir;
 	cycle_dir_t cyc;
@@ -870,6 +910,23 @@ end:
 	}
 
 	return SELECTOR_OK;
+}
+
+bool locate_leaf(xcb_window_t win, coordinates_t *loc)
+{
+	for (monitor_t *m = mon_head; m != NULL; m = m->next) {
+		for (desktop_t *d = m->desk_head; d != NULL; d = d->next) {
+			for (node_t *n = first_extrema(d->root); n != NULL; n = next_leaf(n, d->root)) {
+				if (n->id == win) {
+					loc->monitor = m;
+					loc->desktop = d;
+					loc->node = n;
+					return true;
+				}
+			}
+		}
+	}
+	return false;
 }
 
 bool locate_window(xcb_window_t win, coordinates_t *loc)
@@ -1138,6 +1195,20 @@ bool node_matches(coordinates_t *loc, coordinates_t *ref, node_select_t *sel)
 	WFLAG(urgent)
 #undef WFLAG
 
+	if (sel->horizontal != OPTION_NONE &&
+	    loc->node->split_type != TYPE_HORIZONTAL
+	    ? sel->horizontal == OPTION_TRUE
+	    : sel->horizontal == OPTION_FALSE) {
+		return false;
+	}
+
+	if (sel->vertical != OPTION_NONE &&
+	    loc->node->split_type != TYPE_VERTICAL
+	    ? sel->vertical == OPTION_TRUE
+	    : sel->vertical == OPTION_FALSE) {
+		return false;
+	}
+
 	return true;
 }
 
@@ -1177,6 +1248,28 @@ bool desktop_matches(coordinates_t *loc, coordinates_t *ref, desktop_select_t *s
 	    : sel->local == OPTION_FALSE) {
 		return false;
 	}
+
+#define DLAYOUT(p, e) \
+	if (sel->p != OPTION_NONE && \
+	    loc->desktop->layout != e \
+	    ? sel->p == OPTION_TRUE \
+	    : sel->p == OPTION_FALSE) { \
+		return false; \
+	}
+	DLAYOUT(tiled, LAYOUT_TILED)
+	DLAYOUT(monocle, LAYOUT_MONOCLE)
+#undef DLAYOUT
+
+#define DUSERLAYOUT(p, e) \
+	if (sel->p != OPTION_NONE && \
+	    loc->desktop->user_layout != e \
+	    ? sel->p == OPTION_TRUE \
+	    : sel->p == OPTION_FALSE) { \
+		return false; \
+	}
+	DUSERLAYOUT(user_tiled, LAYOUT_TILED)
+	DUSERLAYOUT(user_monocle, LAYOUT_MONOCLE)
+#undef DUSERLAYOUT
 
 	return true;
 }

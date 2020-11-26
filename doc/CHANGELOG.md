@@ -1,3 +1,30 @@
+# From 0.9.9 to 0.9.10
+
+## Additions
+
+- New node descriptor: `first_ancestor`.
+- New node modifiers: `horizontal`, `vertical`.
+
+## Changes
+
+- The node descriptors `next` and `prev` might now return any node. The previous behavior can be emulated by appending `.!hidden.window`.
+- The node descriptors `pointed`, `biggest` and `smallest` now return leaves (in particular `pointed` will now return the *id* of a pointed receptacle). The previous behavior can be emulated by appending `.window`.
+- The *query* command now handles all the possible descriptor-free constraints (for example, `query -N -d .active` now works as expected).
+- The rules can now match against the window's names (`WM_NAME`).
+- The configuration script now receives an argument to indicate whether is was executed after a restart or not.
+- The *intermediate consequences* passed to the external rules command are now in resolved form to avoid unwanted code execution.
+
+# From 0.9.8 to 0.9.9
+
+- Fix a memory allocation bug in the implementation of `wm --restart`.
+- Honor `single_monocle` when the `hidden` flag is toggled.
+
+# From 0.9.7 to 0.9.8
+
+- Fix a potential infinite loop.
+- Fix two bugs having to do with `single_monocle`.
+- Honor `removal_adjustment` for the spiral automatic insertion scheme.
+
 # From 0.9.6 to 0.9.7
 
 This release fixes a bug in the behavior of `single_monocle`.
